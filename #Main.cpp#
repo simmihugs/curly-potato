@@ -44,7 +44,7 @@ public:
     QNode *succ = p->next.load(std::memory_order_acquire);
 
     if (!succ) {
-auto desired = p;      
+      auto desired = p;
       if (cas(tail, desired, nullptr)) {
         return;
       }
