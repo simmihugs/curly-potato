@@ -1,22 +1,26 @@
+#include <atomic>
 #include <iostream>
 #include <thread>
 
-auto main(int argc, char *argv[]) -> int {
-  int sum = 0;
-  std::cout << "sum = " << sum << "\n";
+class AtomicPetersonLock {
+private:
+  int turn = 0;
+  bool interested[2] = {false, false};
 
-  auto f = [&sum]() {
-    for (int i = 0; i < 100000; i++) {
-      sum += 1;
+public:
+  void aquire(int thread_id) {
+    int other = 1 - thread_id;
+    interested[thread_id] = true;
+    turn = other;
+    while (interested[other] && turn == other) {
+      std::cout << "thread: " << thread_id << " spin\n";
     }
-  };
+  }
 
-  std::thread t1(f);
-  std::thread t2(f);
-  t1.join();
-  t2.join();
+  void release(int thread_id) { interested[thread_id] = false; }
+};
 
-  std::cout << "sum = " << sum << "\n";
+auto main(int argc, char *argv[]) -> int {
 
   return 0;
 }
