@@ -1,6 +1,7 @@
 #include <atomic>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 struct QNode {
   std::atomic<bool> wait;
@@ -44,7 +45,7 @@ public:
     QNode *succ = p->next.load(std::memory_order_acquire);
 
     if (!succ) {
-auto desired = p;      
+      auto desired = p;
       if (cas(tail, desired, nullptr)) {
         return;
       }
@@ -56,6 +57,7 @@ auto desired = p;
     std::cout << "released\n";
   }
 };
+
 
 auto main() -> int {
   std::thread t1;

@@ -1,6 +1,7 @@
 #include <atomic>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 struct QNode {
   std::atomic<bool> wait;
@@ -37,7 +38,6 @@ public:
         //
       }
     }
-    std::cout << "acquired\n";
   }
 
   void release(QNode *p) {
@@ -53,7 +53,6 @@ public:
       } while (succ == nullptr);
     }
     succ->wait.store(false, std::memory_order_release);
-    std::cout << "released\n";
   }
 };
 
@@ -73,12 +72,18 @@ auto main() -> int {
     mcs.release(&node);
   };
 
-  std::cout << "global = " << global << "\n";
+
   t1 = std::thread{func};
   t2 = std::thread{func};
   t1.join();
   t2.join();
-  std::cout << "global = " << global << "\n";
+
+
+  if (global == 2 * 100000000) {
+      std::cout << "SUCCESS\n";      
+  } else {
+      std::cout << "FAILURE\n";      
+  }
 
   return 0;
 }
