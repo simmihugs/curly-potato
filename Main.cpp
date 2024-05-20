@@ -2,163 +2,165 @@
 #include <iomanip>
 #include <iostream>
 #include <thread>
+#include <tuple>
 #include <vector>
 
-class AngabePetersonLock {
+// naive
+struct NaiveQNode {
+  bool wait;
+  NaiveQNode *next;
+  NaiveQNode() : wait(false), next(nullptr) {}
+};
+
+class NaiveMCSLock {
 private:
-  int turn = 0;
-  bool interested[2] = {false, false};
+  NaiveQNode *tail = nullptr;
 
-public:
-  void aquire(int thread_id) {
-    int other = 1 - thread_id;
-    interested[thread_id] = true;
-    turn = other;
-
-    int spins = 0;
-    while (interested[other] && turn == other) {
-      if (spins++ % 10000000 == 0) {
-        std::cout << "thread" << thread_id << " spined for " << spins
-                  << " spins\n";
-      }
-    }
-    std::cout << "aqurired by thread" << thread_id << "\n";
+  NaiveQNode *swap(NaiveQNode **a, NaiveQNode *b) {
+    NaiveQNode *old = *a;
+    *a = b;
+    return old;
   }
 
-  void release(int thread_id) {
-    std::cout << "released by thread" << thread_id << "\n";
-    interested[thread_id] = false;
+  bool cas(NaiveQNode **a, NaiveQNode *expected, NaiveQNode *desired) {
+    bool t = *a == expected;
+    if (t) {
+      *a = desired;
+    }
+    return t;
+  }
+
+public:
+  void acquire(NaiveQNode *p) {
+    NaiveQNode *prev = this->swap(&tail, p);
+    if (prev != NULL) {
+      prev->next = p;
+      while (p->wait) {
+        // spin
+      }
+    }
+    std::cout << "Aquired\n";
+  }
+
+  void release(NaiveQNode *p) {
+    NaiveQNode *succ = p->next;
+    while (succ == NULL) {
+      if (this->cas(&tail, p, NULL)) {
+        return;
+      } else {
+        succ = p->next;
+      }
+    }
+    succ->wait = false;
+    std::cout << "Released\n";
   }
 };
 
-class AtomicPetersonLock {
+struct AtomicQNode {
+  std::atomic<bool> wait;
+  std::atomic<AtomicQNode *> next;
+};
+
+class AtomicMCSLock {
 private:
-  std::atomic<int> turn;
-  std::atomic<bool> interested[2];
+  std::atomic<AtomicQNode *> tail;
+
+  AtomicQNode *swap(std::atomic<AtomicQNode *> &_tail, AtomicQNode *_p) {
+    return _tail.exchange(_p, std::memory_order_acq_rel);
+  }
+
+  bool cas(std::atomic<AtomicQNode *> &_tail, AtomicQNode *_expected,
+           AtomicQNode *_desired) {
+    return _tail.compare_exchange_weak(_expected, _desired,
+                                       std::memory_order_acq_rel);
+  }
 
 public:
-  AtomicPetersonLock() {
-    turn.store(0, std::memory_order_release);
-    interested[0].store(false, std::memory_order_release);
-    interested[1].store(false, std::memory_order_release);
-  }
+  void acquire(AtomicQNode *p) {
+    p->next.store(nullptr);
+    p->wait.store(true);
 
-  ~AtomicPetersonLock() {}
+    AtomicQNode *prev = swap(tail, p);
 
-  void aquire(int thread_id) {
-    int other = 1 - thread_id;
-    interested[thread_id].store(true, std::memory_order_acquire);
-    turn = other;
-
-    int spins = 0;
-    while (interested[other].load(std::memory_order_acquire) &&
-           turn.load(std::memory_order_acquire) == other) {
-      if (spins++ % 10000000 == 0) {
-        // std::cout << "thread" << thread_id << " spined for " << spins << "
-        // spins\n";
+    if (prev) {
+      prev->next.store(p, std::memory_order_release);
+      while (p->wait.load(std::memory_order_acquire)) {
+        //
       }
     }
-    // std::cout << "aqurired by thread" << thread_id << "\n";
+    std::cout << "acquired\n";
   }
 
-  void release(int thread_id) {
-    // std::cout << "released by thread" << thread_id << "\n";
-    interested[thread_id].store(false, std::memory_order_release);
+  void release(AtomicQNode *p) {
+    AtomicQNode *succ = p->next.load(std::memory_order_acquire);
+
+    if (!succ) {
+      if (cas(tail, p, nullptr)) {
+        return;
+      }
+      do {
+        succ = p->next.load(std::memory_order_acquire);
+      } while (succ == nullptr);
+    }
+    succ->wait.store(false, std::memory_order_release);
+    std::cout << "released\n";
   }
 };
 
-void test_angabe_peterson_lock(void) {
-  std::cout << "\n\nAngabe PetersonLock: \n";
-  int global_int = 0;
-  auto lock = AngabePetersonLock();
-  auto func = [&global_int, &lock](int thread_id) {
-    lock.aquire(thread_id);
-    for (auto i = 0; i < 100000000; ++i) {
-      global_int += 1;
-    }
-    lock.release(thread_id);
-  };
+auto main() -> int {
+  // Naive
+  {
+    std::cout << "Naive\n";
+    std::thread t1;
+    std::thread t2;
 
-  std::cout << "global_int = " << global_int << "\n";
-  std::thread t1;
-  std::thread t2;
-  t1 = std::thread{func, 0};
-  t2 = std::thread{func, 1};
-  t1.join();
-  t2.join();
-  std::cout << "global_int = " << global_int << "\n\n\n";
-}
+    NaiveMCSLock lock = NaiveMCSLock();
+    int global = 0;
 
-void test_atomic_peterson_lock(void) {
-  int global_int = 0;
-  AtomicPetersonLock lock = AtomicPetersonLock();
+    auto func = [&lock, &global]() {
+      NaiveQNode node = NaiveQNode();
+      lock.acquire(&node);
+      for (auto i = 0; i < 100000000; ++i) {
+        global += 1;
+      }
+      lock.release(&node);
+    };
 
-  std::cout << "\n\nAtomic PetersonLock: \n";
-  auto func = [&global_int, &lock](int thread_id) {
-    lock.aquire(thread_id);
-    for (auto i = 0; i < 100000000; ++i) {
-      global_int += 1;
-    }
-    lock.release(thread_id);
-  };
-  auto func_without_lock = [&global_int](int thread_id) {
-    for (auto i = 0; i < 100000000; ++i) {
-      global_int += 1;
-    }
-  };
-
-  std::cout << "Compare with lock vs without vs should be:\n";
-  std::cout << "| Atomic Peterson Lock |  No Lock              | Expected "
-               "value        |\n";
-  for (auto i = 0; i < 10; ++i) {
-    global_int = 0;
-    {
-      std::thread t1;
-      std::thread t2;
-      t1 = std::thread{func, 0};
-      t2 = std::thread{func, 1};
-      t1.join();
-      t2.join();
-    }
-    int result = global_int;
-    global_int = 0;
-    {
-      std::thread t1;
-      std::thread t2;
-      t1 = std::thread{func_without_lock, 0};
-      t2 = std::thread{func_without_lock, 1};
-      t1.join();
-      t2.join();
-    }
-    std::cout << "| " << result << std::setw(14) << " | ";
-    std::cout << global_int << std::setw(15) << " | ";
-    std::cout << 200000000 << std::setw(15) << " |\n";
+    std::cout << "global = " << global << "\n";
+    t1 = std::thread{func};
+    t2 = std::thread{func};
+    t1.join();
+    t2.join();
+    std::cout << "global = " << global << "\n";
+    std::cout << "\n\n\n";
   }
-}
 
-void test_without_peterson_lock(void) {
-  std::cout << "\n\nWithout (any) PetersonLock: \n";
-  int global_int = 0;
+  // Atomic
+  {
+    std::cout << "Atomic\n";
+    std::thread t1;
+    std::thread t2;
 
-  auto func = [&global_int](int thread_id) {
-    for (auto i = 0; i < 100000000; ++i) {
-      global_int += 1;
-    }
-  };
+    AtomicMCSLock mcs = AtomicMCSLock();
+    AtomicQNode node;
+    int global = 0;
 
-  std::cout << "global_int = " << global_int << "\n";
-  std::thread t1;
-  std::thread t2;
-  t1 = std::thread{func, 0};
-  t2 = std::thread{func, 1};
-  t1.join();
-  t2.join();
-  std::cout << "global_int = " << global_int << "\n\n\n";
-}
+    auto func = [&mcs, &global, &node]() {
+      mcs.acquire(&node);
+      for (auto i = 0; i < 100000000; ++i) {
+        global += 1;
+      }
+      mcs.release(&node);
+    };
 
-auto main(int argc, char *argv[]) -> int {
-  // test_angabe_peterson_lock();
-  test_atomic_peterson_lock();
-  // test_without_peterson_lock();
+    std::cout << "global = " << global << "\n";
+    t1 = std::thread{func};
+    t2 = std::thread{func};
+    t1.join();
+    t2.join();
+    std::cout << "global = " << global << "\n";
+    std::cout << "\n\n\n";
+  }
+
   return 0;
 }
